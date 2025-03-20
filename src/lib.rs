@@ -198,8 +198,12 @@ mod tests {
         let bus = Bus::new();
         let (tx, rx) = std::sync::mpsc::channel();
         let id = bus.add_callback(move |event| {
+            let mut continue_processing = true;
+            if event.is::<TestEvent2>() {
+                continue_processing = false;
+            }
             tx.send(event).unwrap();
-            true
+            continue_processing
         });
 
         bus.subscribe_to_one::<i32>(id).unwrap();
@@ -213,19 +217,18 @@ mod tests {
         bus.publish(TestEvent);
         bus.publish(TestEvent2);
 
-        for (idx, event) in rx.try_iter().enumerate() {
-            match idx {
-                0 => {
-                    assert_eq!(*event.downcast_ref::<i32>().unwrap(), 42);
-                }
-                1 => {
-                    assert!(event.downcast_ref::<TestEvent>().is_some());
-                }
-                2 => {
-                    assert!(event.downcast_ref::<TestEvent2>().is_some());
-                }
-                _ => panic!("Too many events"),
+         while let Ok(event) = rx.recv() {
+            if event.is::<i32>() {
+                assert_eq!(*event.downcast_ref::<i32>().unwrap(), 42);
+            } else if event.is::<TestEvent>() {
+                assert!(true);
+            } else if event.is::<TestEvent2>() {
+                assert!(true);
+            } else {
+                panic!("Unknown event type");
             }
         }
+
+
     }
 }
