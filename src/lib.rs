@@ -19,8 +19,8 @@ pub enum BusError {
     NotSubscribed,
     #[error("callback not found")]
     CallbackNotFound,
-    #[error("Multiple errors occured {0:?}")]
-    Muti(Vec<BusError>),
+    #[error("SubscribeToMany multiple errors: {0:?}")]
+    SubscribeToMany(HashMap<TypeId, BusError>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -202,16 +202,16 @@ impl Bus {
     /// bus.subscribe_to::<(i32, String)>(id);
     /// ```
     pub fn subscribe_to<E: EventGroup>(&self, id: CallBackId) -> Result<(), BusError> {
-        let mut errors = Vec::new();
+        let mut errors = HashMap::new();
         for event_id in E::event_ids() {
             if let Err(err) = self.subscribe_to_event(event_id, id) {
-                errors.push(err);
+                errors.insert(event_id, err);
             }
         }
         if errors.is_empty() {
             Ok(())
         } else {
-            Err(BusError::Muti(errors))
+            Err(BusError::SubscribeToMany(errors))
         }
     }
 
