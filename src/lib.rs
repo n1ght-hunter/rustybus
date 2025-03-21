@@ -3,9 +3,7 @@
 mod event_trait;
 
 use std::{
-    any::{Any, TypeId},
-    collections::{HashMap, HashSet},
-    sync::{Arc, atomic::AtomicUsize},
+    any::{Any, TypeId}, collections::{HashMap, HashSet}, ops::Deref, sync::{atomic::AtomicUsize, Arc}
 };
 
 use event_trait::EventGroup;
@@ -30,7 +28,22 @@ pub struct CallBackId {
     id: usize,
 }
 
+#[derive(Default, Clone)]
 pub struct Bus {
+    inner: Arc<BusInner>,
+}
+
+
+impl Deref for Bus {
+    type Target = BusInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+#[derive(Default)]
+pub struct BusInner {
     current_id: AtomicUsize,
     event_table: RwLock<HashMap<TypeId, HashSet<CallBackId>>>,
     subscribers: RwLock<HashMap<CallBackId, Subscribers>>,
@@ -61,9 +74,7 @@ impl Subscribers {
 impl Bus {
     pub fn new() -> Self {
         Bus {
-            current_id: AtomicUsize::new(0),
-            event_table: RwLock::new(HashMap::new()),
-            subscribers: RwLock::new(HashMap::new()),
+            inner: Arc::new(BusInner::default()),
         }
     }
 
@@ -217,7 +228,7 @@ mod tests {
         bus.publish(TestEvent);
         bus.publish(TestEvent2);
 
-         while let Ok(event) = rx.recv() {
+        while let Ok(event) = rx.recv() {
             if event.is::<i32>() {
                 assert_eq!(*event.downcast_ref::<i32>().unwrap(), 42);
             } else if event.is::<TestEvent>() {
@@ -228,7 +239,5 @@ mod tests {
                 panic!("Unknown event type");
             }
         }
-
-
     }
 }
