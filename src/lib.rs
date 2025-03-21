@@ -1,4 +1,17 @@
 //! # Rusty sub is a simple library for creating a pub/sub system in Rust.
+//! 
+//! All events are identified by their type id and can be subscribed to with there type.
+//! 
+//! ## Example
+//! ```rust
+//! use rustybus::Bus;
+//! let bus = Bus::new();
+//! bus.once::<i32, _>(|event| {
+//!     assert_eq!(*event.downcast_ref::<i32>().unwrap(), 42);
+//! });
+//! bus.publish(42);
+//! ```
+//! 
 
 mod event_trait;
 
