@@ -13,16 +13,20 @@
 //! ```
 //! 
 
-mod event_trait;
+mod event_group;
+mod event;
+
+pub use event::Event;
 
 use std::{
     any::{Any, TypeId}, collections::{HashMap, HashSet}, ops::Deref, sync::{atomic::AtomicUsize, Arc}
 };
 
-use event_trait::EventGroup;
+use event_group::EventGroup;
 use parking_lot::RwLock;
 
-type Callback = Box<dyn Fn(Arc<dyn Any>) -> bool>;
+
+type Callback = Box<dyn Fn(Event) -> bool>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BusError {
@@ -79,7 +83,7 @@ impl Subscribers {
         self.event_ids.insert(id)
     }
 
-    pub fn call(&self, event: Arc<dyn Any>) -> bool {
+    pub fn call(&self, event: Event) -> bool {
         (self.callback)(event)
     }
 }
@@ -114,6 +118,39 @@ impl Bus {
         }
 
         Ok(())
+    }
+
+    fn publish_inner<F>(&self, event: F, event_id: TypeId) 
+    where
+        F: Fn() -> Event,
+    {
+        if let Some(callback_ids) = { self.event_table.read().get(&event_id).cloned() } {
+            let subscribers = self.subscribers.read();
+            let callbacks = callback_ids
+                .iter()
+                .filter_map(|callback_id| {
+                    if let Some(subscriber) = subscribers.get(callback_id) {
+                        if subscriber.call(event()) {
+                            return None;
+                        } else {
+                            return Some(callback_id);
+                        }
+                    }
+
+                    None
+                })
+                .collect::<Vec<_>>();
+            // drop the lock before removing the callback
+            drop(subscribers);
+
+            if !callbacks.is_empty() {
+                for callback_id in callbacks {
+                    if let Err(err) = self.remove_callback(*callback_id) {
+                        tracing::error!("Error removing callback: {:?}", err);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -155,7 +192,7 @@ impl Bus {
     /// });
     /// bus.publish(42);
     /// ```
-    pub fn once<T: Any + 'static, F: FnOnce(Arc<dyn Any>) + 'static>(&self, callback: F) {
+    pub fn once<T: Any + 'static, F: FnOnce(Event) + 'static>(&self, callback: F) {
         let once = parking_lot::Mutex::new(Some(callback));
         let id = self.add_callback(move |event| {
             if let Some(callback) = once.lock().take() {
@@ -180,7 +217,7 @@ impl Bus {
     ///   true
     /// });
     /// ```
-    pub fn add_callback<F: Fn(Arc<dyn Any>) -> bool + 'static>(&self, callback: F) -> CallBackId {
+    pub fn add_callback<F: Fn(Event) -> bool + 'static>(&self, callback: F) -> CallBackId {
         let id = self.next_id();
         let mut subscribers = self.subscribers.write();
         subscribers.insert(id, Subscribers::new(Box::new(callback)));
@@ -239,36 +276,28 @@ impl Bus {
     /// let bus = Bus::new();
     /// bus.publish(42);
     /// ```
-    pub fn publish<E: Any>(&self, event: E) {
-        let event = Arc::new(event);
-        let event_id = TypeId::of::<E>();
-        if let Some(callback_ids) = { self.event_table.read().get(&event_id).cloned() } {
-            let subscribers = self.subscribers.read();
-            let callbacks = callback_ids
-                .iter()
-                .filter_map(|callback_id| {
-                    if let Some(subscriber) = subscribers.get(callback_id) {
-                        if subscriber.call(event.clone()) {
-                            return None;
-                        } else {
-                            return Some(callback_id);
-                        }
-                    }
+    pub fn publish<E: Any + Clone + Send + Sync>(&self, event: E) {
+        self.publish_inner(
+            || Event::Boxed(Box::new(event.clone())),
+            TypeId::of::<E>(),
+        );
+    }
 
-                    None
-                })
-                .collect::<Vec<_>>();
-            // drop the lock before removing the callback
-            drop(subscribers);
-
-            if !callbacks.is_empty() {
-                for callback_id in callbacks {
-                    if let Err(err) = self.remove_callback(*callback_id) {
-                        tracing::error!("Error removing callback: {:?}", err);
-                    }
-                }
-            }
-        }
+    /// Publish an event to the bus as an Arc
+    /// 
+    /// the event id is the type id
+    /// # Example
+    /// ```
+    /// use rustybus::Bus;
+    /// let bus = Bus::new();
+    /// bus.publish_arc(42);
+    /// ```
+    pub fn publish_arc<E: Any + Send + Sync>(&self, event: E) {
+        let event: Arc<dyn Any + Send + Sync> = Arc::new(event);
+        self.publish_inner(
+            || Event::Arc(Arc::clone(&event)),
+            TypeId::of::<E>(),
+        );
     }
 
     /// Remove a callback from the bus
@@ -308,8 +337,10 @@ impl Bus {
 mod tests {
     use super::*;
 
+    #[derive(Clone)]
     struct TestEvent;
 
+    #[derive(Clone)]
     struct TestEvent2;
 
     #[test]
