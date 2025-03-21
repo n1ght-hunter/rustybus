@@ -71,13 +71,8 @@ impl Subscribers {
     }
 }
 
+// private methods
 impl Bus {
-    pub fn new() -> Self {
-        Bus {
-            inner: Arc::new(BusInner::default()),
-        }
-    }
-
     /// Get the next id for a callback
     fn next_id(&self) -> CallBackId {
         CallBackId {
@@ -87,6 +82,66 @@ impl Bus {
         }
     }
 
+    /// Subscribe to an event
+    fn subscribe_to_event(&self, event_id: TypeId, id: CallBackId) -> Result<(), BusError> {
+        // add the subscriber to the event table
+        {
+            let mut event_table = self.event_table.write();
+            let subscribers = event_table.entry(event_id).or_insert(HashSet::new());
+            if !subscribers.insert(id) {
+                return Err(BusError::AlreadySubscribed);
+            }
+        }
+        // update the subscriber with the event id
+        let mut subscribers = self.subscribers.write();
+        if let Some(subscriber) = subscribers.get_mut(&id) {
+            subscriber.subscribe_to(event_id);
+        } else {
+            return Err(BusError::CallbackNotFound);
+        }
+
+        Ok(())
+    }
+}
+
+impl Bus {
+    /// Create a new bus
+    /// 
+    /// # Example
+    /// ```
+    /// use rustybus::Bus;
+    /// let bus = Bus::new();
+    /// bus.once::<i32, _>(|event| {
+    /// assert_eq!(*event.downcast_ref::<i32>().unwrap(), 42);
+    /// });
+    /// bus.publish(42);
+    /// 
+    /// let id = bus.add_callback(|event| {
+    ///  true
+    /// });
+    /// 
+    /// bus.subscribe_to_one::<i32>(id);
+    /// bus.publish(42);
+    /// ```
+    pub fn new() -> Self {
+        Bus {
+            inner: Arc::new(BusInner::default()),
+        }
+    }
+
+
+
+    /// Add a callback that will only be called once and for a specific event and then removed
+    /// 
+    /// # Example
+    /// ```
+    /// use rustybus::Bus;
+    /// let bus = Bus::new();
+    /// bus.once::<i32, _>(|event| {
+    ///  assert_eq!(*event.downcast_ref::<i32>().unwrap(), 42);
+    /// });
+    /// bus.publish(42);
+    /// ```
     pub fn once<T: Any + 'static, F: FnOnce(Arc<dyn Any>) + 'static>(&self, callback: F) {
         let once = parking_lot::Mutex::new(Some(callback));
         let id = self.add_callback(move |event| {
@@ -98,6 +153,20 @@ impl Bus {
         self.subscribe_to::<(T,)>(id).unwrap();
     }
 
+    /// Add a callback to the bus
+    /// 
+    /// a bool is returned from the callback to indicate if the callback should continue to be called \
+    /// if [`true`] the callback will continue to be called \
+    /// if [`false`] the callback will be removed from the bus and will no longer be called
+    /// 
+    /// # Example
+    /// ```
+    /// use rustybus::Bus;
+    /// let bus = Bus::new();
+    /// let id = bus.add_callback(|event| {
+    ///   true
+    /// });
+    /// ```
     pub fn add_callback<F: Fn(Arc<dyn Any>) -> bool + 'static>(&self, callback: F) -> CallBackId {
         let id = self.next_id();
         let mut subscribers = self.subscribers.write();
@@ -106,10 +175,32 @@ impl Bus {
         id
     }
 
+    /// Subscribe to a single event
+    /// 
+    /// # Example
+    /// ```
+    /// use rustybus::Bus;
+    /// let bus = Bus::new();
+    /// let id = bus.add_callback(|event| {
+    ///   true
+    /// });
+    /// bus.subscribe_to_one::<i32>(id);
+    /// ```
     pub fn subscribe_to_one<E: Any>(&self, id: CallBackId) -> Result<(), BusError> {
         self.subscribe_to_event(TypeId::of::<E>(), id)
     }
 
+    /// Subscribe to multiple events
+    /// 
+    /// # Example
+    /// ```
+    /// use rustybus::Bus;
+    /// let bus = Bus::new();
+    /// let id = bus.add_callback(|event| {
+    ///   true
+    /// });
+    /// bus.subscribe_to::<(i32, String)>(id);
+    /// ```
     pub fn subscribe_to<E: EventGroup>(&self, id: CallBackId) -> Result<(), BusError> {
         let mut errors = Vec::new();
         for event_id in E::event_ids() {
@@ -124,24 +215,17 @@ impl Bus {
         }
     }
 
-    fn subscribe_to_event(&self, event_id: TypeId, id: CallBackId) -> Result<(), BusError> {
-        {
-            let mut event_table = self.event_table.write();
-            let subscribers = event_table.entry(event_id).or_insert(HashSet::new());
-            if !subscribers.insert(id) {
-                return Err(BusError::AlreadySubscribed);
-            }
-        }
-        let mut subscribers = self.subscribers.write();
-        if let Some(subscriber) = subscribers.get_mut(&id) {
-            subscriber.subscribe_to(event_id);
-        } else {
-            return Err(BusError::CallbackNotFound);
-        }
 
-        Ok(())
-    }
 
+    /// Publish an event to the bus
+    /// 
+    /// the event id is the type id
+    /// # Example
+    /// ```
+    /// use rustybus::Bus;
+    /// let bus = Bus::new();
+    /// bus.publish(42);
+    /// ```
     pub fn publish<E: Any>(&self, event: E) {
         let event = Arc::new(event);
         let event_id = TypeId::of::<E>();
@@ -174,6 +258,17 @@ impl Bus {
         }
     }
 
+    /// Remove a callback from the bus
+    /// 
+    /// # Example
+    /// ```
+    /// use rustybus::Bus;
+    /// let bus = Bus::new();
+    /// let id = bus.add_callback(|event| {
+    ///    true
+    /// });
+    /// bus.remove_callback(id);
+    /// ```
     pub fn remove_callback(&self, id: CallBackId) -> Result<(), BusError> {
         let subscriber = {
             // remove the subscriber from the subscriber table
